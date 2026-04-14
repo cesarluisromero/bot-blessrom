@@ -15,6 +15,11 @@ quarkus:
     packages: com.blessrom.travel.entidades
   redis:
     hosts: redis://localhost:6379
+  langchain4j:
+    redis:
+      dimension: 1536
+      index-name: "idx:memoria"
+      metadata-fields: "customer_id" # Esto le dice a Redis que cree un TAG para filtrar
   whatsapp:
     verify-token: blessrom_token_2026
 

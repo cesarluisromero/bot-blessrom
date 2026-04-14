@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 public class WhatsAppResource {
 
     @Inject ChatService chatService;
+
     private static final Logger LOG = Logger.getLogger(WhatsAppResource.class);
 
     @ConfigProperty(name = "whatsapp.verify-token", defaultValue = "blessrom_token_2026")
@@ -50,6 +51,7 @@ public class WhatsAppResource {
         try {
             // 1. Parsear el JSON de Meta
             JsonNode node = objectMapper.readTree(payload);
+
 
             // Verificamos si es un mensaje de texto (Meta envía estados y otros ruidos)
             if (node.has("entry") && node.get("entry").get(0).get("changes").get(0).get("value").has("messages")) {
