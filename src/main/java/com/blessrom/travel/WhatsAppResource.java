@@ -8,8 +8,6 @@ import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -62,13 +60,10 @@ public class WhatsAppResource {
                 String phone = messageNode.get("from").asText(); // Ej: "51949545854"
                 String message = messageNode.get("text").get("body").asText(); // Ej: "Hola, quiero viajar"
 
-                // 2. Leer paquetes.json
-                String paquetes = Files.readString(Path.of("/opt/blessrom/paquetes.json"));
+                // 2. Procesar con la IA
+                String respuestaIA = chatService.procesarMensaje(message, phone);
 
-                // 3. Procesar con la IA
-                String respuestaIA = chatService.procesarFlujo(phone, message);
-
-                // 4. ENVIAR RESPUESTA A WHATSAPP (Lógica que faltaba)
+                // 3. ENVIAR RESPUESTA A WHATSAPP (Lógica que faltaba)
                 enviarMensajeWhatsApp(phone, respuestaIA);
 
                 LOG.info("Respuesta enviada con éxito a: " + phone);
