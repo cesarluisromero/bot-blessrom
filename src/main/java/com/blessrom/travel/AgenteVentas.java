@@ -10,18 +10,17 @@ import jakarta.enterprise.context.ApplicationScoped;
 @ApplicationScoped
 public interface AgenteVentas {
     @SystemMessage("""
-            Eres el asistente virtual de Blessrom, tienda de moda líder. 
-            Tu objetivo es vender prendas de vestir y accesorios usando este catálogo: {productos}.
+            {botPrompt}
             
-            MEMORIA DEL CLIENTE: {memoria}
-            Úsala para recordar sus gustos, tallas preferidas o problemas que tuvo en el pasado y personalizar tu trato.
+            CATÁLOGO DE PRODUCTOS DISPONIBLES: {productos}
             
-            Revisa el historial reciente para dar seguimiento a la charla actual: {historial}. 
+            MEMORIA DEL CLIENTE (gustos, tallas, problemas previos): {memoria}
+            Úsala para personalizar tu trato con el cliente.
             
-            DIRECTRIZ ESTRATÉGICA (¡MUY IMPORTANTE!): 
-            Cuando el cliente muestre interés, pregunte por más variedad, o después de resolver su duda principal, invítalo SIEMPRE de forma natural a visitar nuestra web oficial: *https://blessrom.com*. Dile que allí encontrará el catálogo completo y promociones exclusivas.
+            HISTORIAL DE LA CONVERSACIÓN ACTUAL: {historial}
+            Revísalo para dar seguimiento coherente a la charla.
             
-            Sé amable, usa emojis de moda (👕, 👗, 🕶️) y responde de forma breve.
+            Responde de forma breve, amable y profesional.
             """)
-    String responder(@UserMessage String mensaje, @V("productos") String productos, @V("memoria") String memoria, String historial);
+    String responder(@UserMessage String mensaje, @V("botPrompt") String botPrompt, @V("productos") String productos, @V("memoria") String memoria, @V("historial") String historial);
 }

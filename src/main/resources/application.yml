@@ -28,3 +28,7 @@ blessrom:
     openai-key: ${OPENAI_API_KEY}
   sincronizador-api:
     url: "http://localhost:8082"
+
+botbless:
+  web-api-url: "http://localhost:8083"
+  internal-secret: "botbless-secret-2026"

@@ -42,52 +42,48 @@ public class ChatService {
     @Inject
     EmbeddingStore<TextSegment> memoriaStore;
 
+    /**
+     * Procesa un mensaje con configuración multi-tenant.
+     */
     @Transactional
-    public String procesarMensaje(String message, String fromNumber) {
+    public String procesarMensaje(String message, String fromNumber, BusinessConfigClient.BusinessConfig config) {
 
-        // 🔒 1. ZONA DE ADMINISTRADOR
-        String miNumeroAdmin = "931635969"; // Recuerda dejar tu número real aquí de 9 dígitos
+        String phoneNumberId = config.phoneNumberId();
+        
+        // 🔒 ZONA DE ADMINISTRADOR (usa el número del admin general)
+        String miNumeroAdmin = "931635969";
         String comandoAdmin = message.trim().toLowerCase();
 
-        // Verificamos si el mensaje viene de ti
         if (fromNumber.endsWith(miNumeroAdmin)) {
-
-            // 🟢 COMANDO: /clientes (Lista todos los números y resalta los calientes)
             if (comandoAdmin.equals("/clientes")) {
                 try {
-                    List<String> llaves = redis.key().keys("historial:*");
-                    // Traemos la lista de los que tienen intención de compra
-                    java.util.Set<String> leadsCalientes = redis.set(String.class).smembers("leads_calientes");
+                    List<String> llaves = redis.key().keys("historial:" + phoneNumberId + ":*");
+                    java.util.Set<String> leadsCalientes = redis.set(String.class).smembers("leads_calientes:" + phoneNumberId);
 
                     if (llaves == null || llaves.isEmpty()) {
-                        return "⚠️ Aún no hay clientes en la memoria reciente.";
+                        return "⚠️ Aún no hay clientes para " + config.name() + ".";
                     }
 
-                    StringBuilder respuesta = new StringBuilder("📱 *Clientes Recientes:*\n\n");
+                    StringBuilder respuesta = new StringBuilder("📱 *Clientes de " + config.name() + ":*\n\n");
                     for (String llave : llaves) {
-                        String numero = llave.replace("historial:", "");
-                        // Si el número está en la lista caliente, le ponemos fuego
-                        if (leadsCalientes.contains(numero)) {
+                        String numero = llave.replace("historial:" + phoneNumberId + ":", "");
+                        if (leadsCalientes != null && leadsCalientes.contains(numero)) {
                             respuesta.append("🔥 *").append(numero).append("* (Alta intención)\n");
                         } else {
                             respuesta.append("👤 ").append(numero).append("\n");
                         }
                     }
-
                     respuesta.append("\n👉 Escribe `/historial NUMERO` para espiar.");
-                    // Opcional: limpiar la lista caliente después de leerla para empezar fresco
-                    // redis.key().del("leads_calientes");
                     return respuesta.toString();
                 } catch (Exception e) {
                     return "⚠️ Error al buscar la lista de clientes.";
                 }
             }
 
-            // 🔵 COMANDO EXISTENTE: /historial NUMERO (Muestra la charla)
             if (comandoAdmin.startsWith("/historial")) {
                 try {
                     String numeroCliente = message.split(" ")[1].trim();
-                    List<String> historial = redis.list(String.class).lrange("historial:" + numeroCliente, -10, -1);
+                    List<String> historial = redis.list(String.class).lrange("historial:" + phoneNumberId + ":" + numeroCliente, -10, -1);
 
                     if (historial == null || historial.isEmpty()) {
                         return "⚠️ No encontré conversaciones para: " + numeroCliente;
@@ -100,72 +96,77 @@ public class ChatService {
         }
         // fin de zona admin
 
-        String historialKey = "historial:" + fromNumber;
+        // Clave Redis con namespace multi-tenant
+        String historialKey = "historial:" + phoneNumberId + ":" + fromNumber;
 
-        // 1. Obtener historial (Método correcto en Quarkus Redis: lrange)
-        // Traemos los últimos 10 mensajes para contexto
+        // 1. Obtener historial
         List<String> historial = redis.list(String.class).lrange(historialKey, -10, -1);
         String historialStr = String.join("\n", historial);
 
-        // 2. Memoria Semántica (El "cerebro" de gustos pasados)
+        // 2. Memoria Semántica
         String memoriaPasada = buscarMemoriaSemantica(message, fromNumber);
 
-        // 3. CONSULTA AL OTRO MICROSERVICIO (RAG)
-        // Ya no hay SQL aquí. Le pedimos los productos relevantes al Sincronizador.
-        String contextoProductos = sincronizadorClient.buscarProductos(message);
-
-        LOG.info("📦 Respuesta recibida del Sincronizador: " + contextoProductos);
-
-        //4. 🚨 RADAR DE VENTAS INTELIGENTE: Detecta plurales y variaciones
-        if (PATRON_COMPRAS.matcher(message).matches()) {
-            redis.set(String.class).sadd("leads_calientes", fromNumber);
-            LOG.info("🔥 Lead caliente detectado: " + fromNumber);
+        // 3. OBTENER PRODUCTOS según el tipo de negocio
+        String contextoProductos;
+        if (config.hasRag()) {
+            // Blessrom C&M: usa el pipeline RAG (Sincronizador + Weaviate)
+            contextoProductos = sincronizadorClient.buscarProductos(message);
+            LOG.info("📦 Productos RAG para " + config.name() + ": " + contextoProductos);
+        } else if (config.productCatalog() != null && !config.productCatalog().isBlank()) {
+            // Negocio con catálogo JSON subido por admin
+            contextoProductos = config.productCatalog();
+            LOG.info("📋 Catálogo JSON para " + config.name());
+        } else {
+            // Negocio puramente conversacional, sin catálogo
+            contextoProductos = "Sin catálogo de productos disponible.";
         }
 
-        // 5. Respuesta de la IA
-        String respuesta = agente.responder(message, contextoProductos, memoriaPasada, historialStr);
+        // 4. Radar de ventas
+        if (PATRON_COMPRAS.matcher(message).matches()) {
+            redis.set(String.class).sadd("leads_calientes:" + phoneNumberId, fromNumber);
+            LOG.info("🔥 Lead caliente: " + fromNumber + " (Negocio: " + config.name() + ")");
+        }
 
-        // 6. Guardar en Redis (Método correcto en Quarkus Redis: rpush)
+        // 5. Respuesta de la IA con prompt dinámico del negocio
+        String botPrompt = config.botPrompt();
+        if (botPrompt == null || botPrompt.isBlank()) {
+            botPrompt = "Eres un asistente virtual profesional. Ayuda al cliente con sus consultas.";
+        }
+        
+        String respuesta = agente.responder(message, botPrompt, contextoProductos, memoriaPasada, historialStr);
+
+        // 6. Guardar en Redis con namespace
         redis.list(String.class).rpush(historialKey, "User: " + message);
         redis.list(String.class).rpush(historialKey, "Bot: " + respuesta);
 
-        // 7. Guardar Memoria a largo plazo (Redis Vector)
+        // 7. Guardar Memoria a largo plazo
         guardarMemoriaSemantica(fromNumber, "Cliente preguntó: " + message + " | Bot respondió: " + respuesta);
 
         return respuesta;
     }
 
     private void guardarMemoriaSemantica(String phone, String texto) {
-        // 1. Creamos el segmento de texto adjuntando el teléfono como metadato
         TextSegment segmento = TextSegment.from(texto, Metadata.metadata("customer_id", phone));
-
-        // 2. Generamos el vector
         dev.langchain4j.data.embedding.Embedding embedding = embeddingModel.embed(segmento).content();
-
-        // 3. Guardamos. La extensión hace el HSET y convierte los bytes por nosotros
         memoriaStore.add(embedding, segmento);
     }
 
     private String buscarMemoriaSemantica(String query, String phone) {
         try {
-            // 1. Generamos el vector de la pregunta
             dev.langchain4j.data.embedding.Embedding queryEmbedding = embeddingModel.embed(query).content();
 
-            // 2. Preparamos la búsqueda filtrando solo por el número de este cliente
             EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
                     .queryEmbedding(queryEmbedding)
                     .maxResults(3)
                     .filter(MetadataFilterBuilder.metadataKey("customer_id").isEqualTo(phone))
                     .build();
 
-            // 3. Ejecutamos la búsqueda
             var resultados = memoriaStore.search(request).matches();
 
             if (resultados.isEmpty()) {
                 return "Sin memoria previa relevante.";
             }
 
-            // 4. Extraemos y unimos los textos encontrados
             StringBuilder memorias = new StringBuilder();
             for (var match : resultados) {
                 memorias.append("- ").append(match.embedded().text()).append("\n");
