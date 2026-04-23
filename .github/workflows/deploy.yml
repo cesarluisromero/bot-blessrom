@@ -34,7 +34,7 @@ jobs:
           port: 22
           script: |
             sudo systemctl stop blessrom.service
-            sudo rm /opt/blessrom/bot-blessrom
+            sudo rm /opt/blessrom/bot-blessrom/whatsapp-ai-bot-1.0.0-SNAPSHOT-runner
 
       - name: Copy Binary to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -58,5 +58,5 @@ jobs:
           port: 22
           script: |
             # Dar permisos al archivo binario dentro de la carpeta
-            chmod +x /opt/blessrom/bot-blessrom
+            chmod +x /opt/blessrom/bot-blessrom/whatsapp-ai-bot-1.0.0-SNAPSHOT-runner
             sudo systemctl start blessrom.service
