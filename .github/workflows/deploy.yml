@@ -1,0 +1,61 @@
+name: Deploy WhatsApp AI Bot (Native)
+
+on:
+  push:
+    branches: [ main, master ] # Se activa al hacer push a main o master
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build Native Image
+        run: |
+          ./mvnw clean package "-Dnative" "-Dquarkus.native.container-build=true" "-DskipTests"
+
+      - name: Prepare VPS and Copy Binary
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script: |
+            sudo systemctl stop blessrom.service
+            sudo rm /opt/blessrom/bot-blessrom/whatsapp-ai-bot-1.0.0-SNAPSHOT-runner
+
+      - name: Copy Binary to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          source: "target/whatsapp-ai-bot-1.0.0-SNAPSHOT-runner"
+          target: "/opt/blessrom/bot-blessrom"
+          strip_components: 1
+
+      - name: Finalize and Start Service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script: |
+            # Dar permisos al archivo binario dentro de la carpeta
+            chmod +x /opt/blessrom/bot-blessrom/whatsapp-ai-bot-1.0.0-SNAPSHOT-runner
+            sudo systemctl start blessrom.service
