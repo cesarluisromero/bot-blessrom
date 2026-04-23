@@ -58,5 +58,5 @@ jobs:
           port: 22
           script: |
             # Dar permisos al archivo binario dentro de la carpeta
-            chmod +x /opt/blessrom/bot-blessrom/whatsapp-ai-bot-1.0.0-SNAPSHOT-runner
+            chmod +x /opt/blessrom/bot-blessrom
             sudo systemctl start blessrom.service
