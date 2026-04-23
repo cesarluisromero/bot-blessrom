@@ -31,4 +31,25 @@ public class SincronizadorClient {
             return "Catálogo temporalmente no disponible.";
         }
     }
+
+    /**
+     * Busca productos y devuelve el JSON original del buscador vectorial
+     */
+    public String buscarTarjetasJson(String query, int limit) {
+        try {
+            String body = String.format("{\"query\": \"%s\", \"limit\": %d, \"minScore\": 0.4}",
+                    query.replace("\"", "\\\""), limit);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "/search"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (Exception e) {
+            return "{\"results\": []}";
+        }
+    }
 }

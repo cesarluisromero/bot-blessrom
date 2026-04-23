@@ -158,7 +158,7 @@ public class ChatService {
             EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
                     .queryEmbedding(queryEmbedding)
                     .maxResults(3)
-                    .filter(MetadataFilterBuilder.metadataKey("customer_id").isEqualTo(phone))
+                    // .filter(MetadataFilterBuilder.metadataKey("customer_id").isEqualTo(phone)) // Desactivado por limitación de driver en modo nativo
                     .build();
 
             var resultados = memoriaStore.search(request).matches();
