@@ -2,42 +2,33 @@ quarkus:
   http:
     port: 8080
   datasource:
-    # 1. Base de datos por defecto (LOCAL - blessrom_db)
     db-kind: mysql
     username: blessrom_user
     password: "XIcsH5R#/WFhZQTz"
     jdbc:
       url: jdbc:mysql://127.0.0.1:3306/blessrom_db
-
-    # 2. Segunda base de datos (WEB - WooCommerce Hostinger)
-    web:
-      db-kind: mysql
-      username: u625751521_6t0qa
-      password: f0syp2oJMd
-      jdbc:
-        url: jdbc:mysql://srv2021.hstgr.io:3306/u625751521_3kWBa
-
   hibernate-orm:
     database:
       generation: update
     log:
       sql: true
-    # --- AJUSTE AQUÍ ---
-    # Decimos que las entidades en este paquete van a la DB local por defecto
     packages: com.blessrom.travel.entidades
-
-    # Configuramos la unidad de persistencia para la web
-    web:
-      datasource: web
-      # Si no tienes entidades físicas para WordPress (porque usas Native Query),
-      # pon un paquete que no exista o esté vacío para que no intente buscar ahí.
-      packages: com.blessrom.travel.web
   redis:
     hosts: redis://localhost:6379
+  langchain4j:
+    redis:
+      dimension: 1536
+      index-name: "idx:memoria"
+      metadata-fields: "customer_id" # Esto le dice a Redis que cree un TAG para filtrar
   whatsapp:
     verify-token: blessrom_token_2026
 
 blessrom:
   bot:
     openai-key: ${OPENAI_API_KEY}
-#    paquetes-path: /opt/blessrom/config/paquetes.json
+  sincronizador-api:
+    url: "http://localhost:8082"
+
+botbless:
+  web-api-url: "http://localhost:8083"
+  internal-secret: "botbless-secret-2026"

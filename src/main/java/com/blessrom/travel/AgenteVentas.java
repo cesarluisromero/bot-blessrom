@@ -10,10 +10,17 @@ import jakarta.enterprise.context.ApplicationScoped;
 @ApplicationScoped
 public interface AgenteVentas {
     @SystemMessage("""
-            Eres el asistente virtual de Blessrom, tienda de moda líder. 
-            Tu objetivo es vender prendas de vestir y accesorios usando este catálogo: {productos}.
-            Revisa el historial del cliente para dar seguimiento: {historial}. 
-            Sé amable, usa emojis de moda (👕, 👗, 🕶️) y responde de forma breve.
+            {botPrompt}
+            
+            CATÁLOGO DE PRODUCTOS DISPONIBLES: {productos}
+            
+            MEMORIA DEL CLIENTE (gustos, tallas, problemas previos): {memoria}
+            Úsala para personalizar tu trato con el cliente.
+            
+            HISTORIAL DE LA CONVERSACIÓN ACTUAL: {historial}
+            Revísalo para dar seguimiento coherente a la charla.
+            
+            Responde de forma breve, amable y profesional.
             """)
-    String responder(@UserMessage String mensaje, @V("productos") String productos, String historial);
+    String responder(@UserMessage String mensaje, @V("botPrompt") String botPrompt, @V("productos") String productos, @V("memoria") String memoria, @V("historial") String historial);
 }

@@ -1,22 +1,31 @@
 package com.blessrom.travel;
 
-import com.blessrom.travel.entidades.Cliente;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
+import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
+import com.blessrom.travel.client.SincronizadorClient;
+import dev.langchain4j.model.embedding.EmbeddingModel;
 import io.quarkus.redis.datasource.RedisDataSource;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
-
-import java.util.ArrayList;
+import org.jboss.logging.Logger;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.regex.Pattern;
 import java.util.List;
-import java.util.Map;
-
-import jakarta.persistence.EntityManager;
-import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class ChatService {
+
+    private static final Logger LOG = Logger.getLogger(ChatService.class);
+
+    // Radar Blindado: Atrapa errores ortográficos, sufijos (comprarlo, yapearte) y sinónimos
+    private static final Pattern PATRON_COMPRAS = Pattern.compile(
+            "(?i).*\\b(prec[ií]o[s]?|presio[s]?|costo|vale|compra[a-z]*|yape[a-z]*|plin|plim|talla[s]?|env[ií]o[s]?|enviar|cu[aá]nto|k[u]?anto|quiero|pago|pagar|cuenta|transfer[a-z]*)\\b.*"
+    );
 
     @Inject
     RedisDataSource redis;
@@ -25,116 +34,156 @@ public class ChatService {
     AgenteVentas agente;
 
     @Inject
-    ObjectMapper objectMapper;
+    SincronizadorClient sincronizadorClient;
 
     @Inject
-    @io.quarkus.hibernate.orm.PersistenceUnit("web")
-    EntityManager emWeb;
+    EmbeddingModel embeddingModel;
 
+    @Inject
+    EmbeddingStore<TextSegment> memoriaStore;
+
+    /**
+     * Procesa un mensaje con configuración multi-tenant.
+     */
     @Transactional
-    public String procesarFlujo(String phone, String userMsg) {
-        var redisValue = redis.value(String.class);
+    public String procesarMensaje(String message, String fromNumber, BusinessConfigClient.BusinessConfig config) {
 
-        // 1. Buscar en Redis, si no en DB
-        String cached = redisValue.get("session:" + phone);
-        Cliente cliente = (cached != null) ? deserialize(cached) : Cliente.find("telefono", phone).firstResult();
+        String phoneNumberId = config.phoneNumberId();
+        
+        // 🔒 ZONA DE ADMINISTRADOR (usa el número del admin general)
+        String miNumeroAdmin = "931635969";
+        String comandoAdmin = message.trim().toLowerCase();
 
-        if (cliente == null) {
-            cliente = new Cliente();
-            cliente.telefono = phone;
-            cliente.historial = "[]";
-            cliente.persist();
+        if (fromNumber.endsWith(miNumeroAdmin)) {
+            if (comandoAdmin.equals("/clientes")) {
+                try {
+                    List<String> llaves = redis.key().keys("historial:" + phoneNumberId + ":*");
+                    java.util.Set<String> leadsCalientes = redis.set(String.class).smembers("leads_calientes:" + phoneNumberId);
+
+                    if (llaves == null || llaves.isEmpty()) {
+                        return "⚠️ Aún no hay clientes para " + config.name() + ".";
+                    }
+
+                    StringBuilder respuesta = new StringBuilder("📱 *Clientes de " + config.name() + ":*\n\n");
+                    for (String llave : llaves) {
+                        String numero = llave.replace("historial:" + phoneNumberId + ":", "");
+                        if (leadsCalientes != null && leadsCalientes.contains(numero)) {
+                            respuesta.append("🔥 *").append(numero).append("* (Alta intención)\n");
+                        } else {
+                            respuesta.append("👤 ").append(numero).append("\n");
+                        }
+                    }
+                    respuesta.append("\n👉 Escribe `/historial NUMERO` para espiar.");
+                    return respuesta.toString();
+                } catch (Exception e) {
+                    return "⚠️ Error al buscar la lista de clientes.";
+                }
+            }
+
+            if (comandoAdmin.startsWith("/historial")) {
+                try {
+                    String numeroCliente = message.split(" ")[1].trim();
+                    List<String> historial = redis.list(String.class).lrange("historial:" + phoneNumberId + ":" + numeroCliente, -10, -1);
+
+                    if (historial == null || historial.isEmpty()) {
+                        return "⚠️ No encontré conversaciones para: " + numeroCliente;
+                    }
+                    return "🕵️‍♂️ *Historial de " + numeroCliente + "*:\n\n" + String.join("\n", historial);
+                } catch (Exception e) {
+                    return "⚠️ Error. Usa el formato exacto: /historial NUMERO";
+                }
+            }
+        }
+        // fin de zona admin
+
+        // Clave Redis con namespace multi-tenant
+        String historialKey = "historial:" + phoneNumberId + ":" + fromNumber;
+
+        // 1. Obtener historial
+        List<String> historial = redis.list(String.class).lrange(historialKey, -10, -1);
+        String historialStr = String.join("\n", historial);
+
+        // 2. Memoria Semántica
+        String memoriaPasada = buscarMemoriaSemantica(message, fromNumber);
+
+        // 3. OBTENER PRODUCTOS según el tipo de negocio
+        String contextoProductos;
+        if (config.hasRag()) {
+            // Blessrom C&M: usa el pipeline RAG (Sincronizador + Weaviate)
+            contextoProductos = sincronizadorClient.buscarProductos(message);
+            LOG.info("📦 Productos RAG para " + config.name() + ": " + contextoProductos);
+        } else if (config.productCatalog() != null && !config.productCatalog().isBlank()) {
+            // Negocio con catálogo JSON subido por admin
+            contextoProductos = config.productCatalog();
+            LOG.info("📋 Catálogo JSON para " + config.name());
+        } else {
+            // Negocio puramente conversacional, sin catálogo
+            contextoProductos = "Sin catálogo de productos disponible.";
         }
 
-        // --- CAMBIO AQUÍ: Obtenemos datos reales de la DB ---
-        String catalogoReal = obtenerCatalogoDesdeBD();
+        // 4. Radar de ventas
+        if (PATRON_COMPRAS.matcher(message).matches()) {
+            redis.set(String.class).sadd("leads_calientes:" + phoneNumberId, fromNumber);
+            LOG.info("🔥 Lead caliente: " + fromNumber + " (Negocio: " + config.name() + ")");
+        }
 
-        // 2. Obtener respuesta de IA
-        String respuesta = agente.responder(userMsg, catalogoReal, cliente.historial);
+        // 5. Respuesta de la IA con prompt dinámico del negocio
+        String botPrompt = config.botPrompt();
+        if (botPrompt == null || botPrompt.isBlank()) {
+            botPrompt = "Eres un asistente virtual profesional. Ayuda al cliente con sus consultas.";
+        }
+        
+        String respuesta = agente.responder(message, botPrompt, contextoProductos, memoriaPasada, historialStr);
 
-        // 3. Actualizar Historial y Sincronizar
-        cliente.historial = actualizarHistorial(cliente.historial, userMsg, respuesta);
-        redisValue.setex("session:" + phone, 3600, serialize(cliente));
+        // 6. Guardar en Redis con namespace
+        redis.list(String.class).rpush(historialKey, "User: " + message);
+        redis.list(String.class).rpush(historialKey, "Bot: " + respuesta);
+
+        // 7. Guardar Memoria a largo plazo
+        guardarMemoriaSemantica(fromNumber, "Cliente preguntó: " + message + " | Bot respondió: " + respuesta);
 
         return respuesta;
     }
 
-    private String serialize(Cliente cliente) {
-        try {
-            return objectMapper.writeValueAsString(cliente);
-        } catch (Exception e) {
-            throw new RuntimeException("Error al serializar cliente", e);
-        }
+    private void guardarMemoriaSemantica(String phone, String texto) {
+        TextSegment segmento = TextSegment.from(texto, Metadata.metadata("customer_id", phone));
+        dev.langchain4j.data.embedding.Embedding embedding = embeddingModel.embed(segmento).content();
+        memoriaStore.add(embedding, segmento);
     }
 
-    private Cliente deserialize(String json) {
+    private String buscarMemoriaSemantica(String query, String phone) {
         try {
-            return objectMapper.readValue(json, Cliente.class);
-        } catch (Exception e) {
-            throw new RuntimeException("Error al deserializar cliente", e);
-        }
-    }
+            dev.langchain4j.data.embedding.Embedding queryEmbedding = embeddingModel.embed(query).content();
 
-    private String actualizarHistorial(String historialActual, String userMsg, String aiReply) {
-        try {
-            List<Map<String, String>> mensajes;
+            EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
+                    .queryEmbedding(queryEmbedding)
+                    .maxResults(3)
+                    // .filter(MetadataFilterBuilder.metadataKey("customer_id").isEqualTo(phone)) // Desactivado por limitación de driver en modo nativo
+                    .build();
 
-            // 1. Si el historial está vacío o es nulo, inicializamos una lista nueva
-            if (historialActual == null || historialActual.isEmpty() || historialActual.equals("[]")) {
-                mensajes = new ArrayList<>();
-            } else {
-                // 2. Si ya tiene datos, deserializamos el JSON a una Lista de Mapas
-                mensajes = objectMapper.readValue(historialActual, new TypeReference<List<Map<String, String>>>() {});
+            var resultados = memoriaStore.search(request).matches();
+
+            if (resultados.isEmpty()) {
+                return "Sin memoria previa relevante.";
             }
 
-            // 3. Añadimos el nuevo par de mensajes (Usuario y Asistente)
-            mensajes.add(Map.of("role", "user", "content", userMsg));
-            mensajes.add(Map.of("role", "assistant", "content", aiReply));
-
-            // 4. Mantenemos el historial corto para ahorrar tokens (Opcional: solo los últimos 10 mensajes)
-            if (mensajes.size() > 10) {
-                mensajes = mensajes.subList(mensajes.size() - 10, mensajes.size());
+            StringBuilder memorias = new StringBuilder();
+            for (var match : resultados) {
+                memorias.append("- ").append(match.embedded().text()).append("\n");
             }
-
-            // 5. Convertimos de nuevo a String JSON para persistir
-            return objectMapper.writeValueAsString(mensajes);
+            return memorias.toString();
 
         } catch (Exception e) {
-            // En caso de error de formato, reseteamos el historial con la interacción actual para no romper el flujo
-            return "[{\"role\":\"user\", \"content\":\"" + userMsg + "\"}, {\"role\":\"assistant\", \"content\":\"" + aiReply + "\"}]";
+            LOG.warn("No se pudo recuperar la memoria semántica: " + e.getMessage());
+            return "";
         }
     }
 
-    private String obtenerCatalogoDesdeBD() {
-        // CAMBIO CLAVE: Añadimos una subconsulta para filtrar solo los que dicen 'instock'
-        String sql = "SELECT p.`post_title`, " +
-                "MAX(CASE WHEN pm.`meta_key` = '_price' THEN pm.`meta_value` END), " +
-                "MAX(CASE WHEN pm.`meta_key` = '_stock' THEN pm.`meta_value` END), " +
-                "p.`post_excerpt` " +
-                "FROM `wp_posts` p " +
-                "LEFT JOIN `wp_postmeta` pm ON p.`ID` = pm.`post_id` " +
-                "WHERE p.`post_type` = 'product' AND p.`post_status` = 'publish' " +
-                // --- ESTA ES LA LÍNEA MÁGICA QUE FILTRA EL STOCK ---
-                "AND p.`ID` IN (SELECT `post_id` FROM `wp_postmeta` WHERE `meta_key` = '_stock_status' AND `meta_value` = 'instock') " +
-                "GROUP BY p.`ID` LIMIT 20";
-
-        try {
-            List<Object[]> resultados = emWeb.createNativeQuery(sql).getResultList();
-
-            return resultados.stream()
-                    .map(r -> {
-                        String nombre = String.valueOf(r[0]);
-                        String precio = (r[1] != null) ? r[1].toString() : "Consultar";
-                        // Si el stock numérico es nulo pero está "instock", mostramos "Disponible"
-                        String stock = (r[2] != null && !r[2].toString().isEmpty()) ? r[2].toString() : "Disponible";
-                        String info = (r[3] != null && !r[3].toString().isEmpty()) ? r[3].toString() : "Ver en web";
-
-                        return String.format("Producto: %s | Precio: S/ %s | Stock: %s | Info: %s",
-                                nombre, precio, stock, info);
-                    })
-                    .collect(Collectors.joining("\n"));
-        } catch (Exception e) {
-            return "Catálogo disponible en blessrom.com";
+    private byte[] toByteArray(float[] floats) {
+        ByteBuffer buffer = ByteBuffer.allocate(floats.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+        for (float f : floats) {
+            buffer.putFloat(f);
         }
+        return buffer.array();
     }
 }

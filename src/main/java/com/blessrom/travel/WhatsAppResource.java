@@ -8,8 +8,6 @@ import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -20,6 +18,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 public class WhatsAppResource {
 
     @Inject ChatService chatService;
+    @Inject BusinessConfigClient businessConfigClient;
+
     private static final Logger LOG = Logger.getLogger(WhatsAppResource.class);
 
     @ConfigProperty(name = "whatsapp.verify-token", defaultValue = "blessrom_token_2026")
@@ -29,17 +29,16 @@ public class WhatsAppResource {
     ObjectMapper objectMapper;
 
     @GET
-    @Produces(MediaType.TEXT_PLAIN) // <--- Fuerza a que sea texto plano
+    @Produces(MediaType.TEXT_PLAIN)
     public Response verify(@QueryParam("hub.mode") String mode,
                            @QueryParam("hub.verify_token") String token,
                            @QueryParam("hub.challenge") String challenge) {
 
         LOG.info("Intento de validación: token recibido = " + token);
 
-        // Usamos la variable que configuramos con @ConfigProperty
         if ("subscribe".equals(mode) && verifyToken.equals(token)) {
             LOG.info("Validación exitosa!");
-            return Response.ok(challenge).build(); // Devuelve el número que Meta envió
+            return Response.ok(challenge).build();
         }
 
         LOG.warn("Validación fallida: el token no coincide");
@@ -50,28 +49,36 @@ public class WhatsAppResource {
     @Consumes(MediaType.APPLICATION_JSON)
     public Response receiveMessage(String payload) {
         try {
-            // 1. Parsear el JSON de Meta
             JsonNode node = objectMapper.readTree(payload);
 
-            // Verificamos si es un mensaje de texto (Meta envía estados y otros ruidos)
             if (node.has("entry") && node.get("entry").get(0).get("changes").get(0).get("value").has("messages")) {
 
-                JsonNode messageNode = node.get("entry").get(0).get("changes").get(0).get("value").get("messages").get(0);
+                JsonNode valueNode = node.get("entry").get(0).get("changes").get(0).get("value");
+                JsonNode messageNode = valueNode.get("messages").get(0);
 
-                // EXTRAEMOS EL TELÉFONO REAL Y EL MENSAJE REAL
-                String phone = messageNode.get("from").asText(); // Ej: "51949545854"
-                String message = messageNode.get("text").get("body").asText(); // Ej: "Hola, quiero viajar"
+                // Extraer datos del mensaje
+                String phone = messageNode.get("from").asText();
+                String message = messageNode.get("text").get("body").asText();
 
-                // 2. Leer paquetes.json
-                String paquetes = Files.readString(Path.of("/opt/blessrom/paquetes.json"));
+                // MULTI-TENANT: Extraer el phone_number_id del metadata
+                String phoneNumberId = valueNode.get("metadata").get("phone_number_id").asText();
+                LOG.info("📨 Mensaje de " + phone + " para negocio (phoneNumberId): " + phoneNumberId);
 
-                // 3. Procesar con la IA
-                String respuestaIA = chatService.procesarFlujo(phone, message);
+                // Resolver la configuración del negocio
+                BusinessConfigClient.BusinessConfig config = businessConfigClient.getConfig(phoneNumberId);
 
-                // 4. ENVIAR RESPUESTA A WHATSAPP (Lógica que faltaba)
-                enviarMensajeWhatsApp(phone, respuestaIA);
+                if (config == null) {
+                    LOG.warn("⚠️ No se encontró configuración para phoneNumberId: " + phoneNumberId + ". Ignorando mensaje.");
+                    return Response.ok().build();
+                }
 
-                LOG.info("Respuesta enviada con éxito a: " + phone);
+                // Procesar con la IA usando la config del negocio
+                String respuestaIA = chatService.procesarMensaje(message, phone, config);
+
+                // Enviar respuesta con el accessToken del negocio
+                enviarMensajeWhatsApp(phone, respuestaIA, phoneNumberId, config.accessToken());
+
+                LOG.info("✅ Respuesta enviada a " + phone + " (Negocio: " + config.name() + ")");
             }
 
             return Response.ok().build();
@@ -81,14 +88,11 @@ public class WhatsAppResource {
         }
     }
 
-    // Método auxiliar para responder a Meta
-    private void enviarMensajeWhatsApp(String toNumber, String text) {
+    /**
+     * Enviar mensaje a WhatsApp usando las credenciales del negocio.
+     */
+    private void enviarMensajeWhatsApp(String toNumber, String text, String phoneNumberId, String accessToken) {
         try {
-            // 1. Recuperamos las credenciales que pasamos por el comando nohup (-D)
-            String phoneId = System.getProperty("whatsapp.phone-number-id");
-            String accessToken = System.getProperty("whatsapp.access-token");
-
-            // 2. Construimos el cuerpo del mensaje en JSON usando Jackson
             ObjectNode rootNode = objectMapper.createObjectNode();
             rootNode.put("messaging_product", "whatsapp");
             rootNode.put("recipient_type", "individual");
@@ -98,16 +102,14 @@ public class WhatsAppResource {
 
             String jsonBody = objectMapper.writeValueAsString(rootNode);
 
-            // 3. Preparamos la petición HTTP hacia Meta
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://graph.facebook.com/v18.0/" + phoneId + "/messages"))
+                    .uri(URI.create("https://graph.facebook.com/v18.0/" + phoneNumberId + "/messages"))
                     .header("Authorization", "Bearer " + accessToken)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                     .build();
 
-            // 4. Enviamos y revisamos la respuesta
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
