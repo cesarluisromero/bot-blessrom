@@ -34,7 +34,7 @@ jobs:
           port: 22
           script: |
             sudo systemctl stop blessrom.service
-            sudo rm /opt/blessrom/bot-blessrom/whatsapp-ai-bot-1.0.0-SNAPSHOT-runner
+            sudo rm /opt/blessrom/bot-blessrom
 
       - name: Copy Binary to VPS
         uses: appleboy/scp-action@v0.1.7
